@@ -32,6 +32,10 @@ class NodeRequest(BaseModel):
 class BlockRequest(BaseModel):
     ip: str
 
+class WeightRequest(BaseModel):
+    node: str
+    weight: float
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/", tags=["General"])
@@ -169,3 +173,40 @@ def reset_metrics():
     """Reset all metrics counters to zero."""
     lb.metrics.reset()
     return {"message": "Metrics reset successfully"}
+
+
+@app.get("/nodes/weights", tags=["Weighted Routing"])
+def get_weights():
+    """
+    Show the current weight of every node.
+    Weight controls what share of traffic each node receives.
+    A node with weight 2 gets roughly 2x the traffic of a node with weight 1.
+    """
+    return {
+        "weights": lb.ring.get_weights(),
+        "note": "Traffic share is proportional to weight. Default weight is 1."
+    }
+
+
+@app.post("/nodes/weight", tags=["Weighted Routing"])
+def set_weight(body: WeightRequest):
+    """
+    Change a node's weight at runtime.
+
+    Examples:
+    - weight=2 → node gets ~2x traffic of a weight=1 node
+    - weight=0.5 → node gets ~half the traffic of a weight=1 node
+
+    Minimum weight is 0.1. Changes take effect immediately.
+    """
+    if body.node not in lb.nodes:
+        raise HTTPException(status_code=404, detail=f"Node '{body.node}' not found")
+    if body.weight < 0.1:
+        raise HTTPException(status_code=400, detail="Weight must be at least 0.1")
+    lb.ring.set_weight(body.node, body.weight)
+    return {
+        "node": body.node,
+        "weight": body.weight,
+        "ring_slots": lb.ring.get_distribution().get(body.node, 0),
+        "all_weights": lb.ring.get_weights(),
+    }
