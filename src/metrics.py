@@ -1,121 +1,81 @@
-"""
-Metrics Module
-Tracks request metrics and performance statistics
-"""
-
-from typing import Dict, List
-from time import time
-
+from datetime import datetime
 
 class Metrics:
+    """
+    Tracks everything happening inside the load balancer.
+
+    Collects:
+    - Total requests received
+    - Total requests blocked (rate limited)
+    - Per-node request counts
+    - Per-IP request counts
+    - Last 50 request logs (for live dashboard)
+    - Uptime (since the server started)
+    """
+
     def __init__(self):
-        """Initialize metrics tracker"""
-        self.request_count = 0
-        self.total_response_time = 0
-        self.server_metrics: Dict[str, dict] = {}
-        self.status_codes: Dict[int, int] = {}
-        self.start_time = time()
+        self.started_at: str = datetime.now().isoformat(timespec="seconds")
+        self.total_requests: int = 0
+        self.total_blocked: int = 0
+        self.node_hits: dict[str, int] = {}       # node  → request count
+        self.ip_hits: dict[str, int] = {}         # ip    → request count
+        self.recent_logs: list[dict] = []         # last 50 request records
+        self._max_logs: int = 50
 
-    def record_request(self, server, status_code, response_time):
-        """
-        Record a request
-        
-        Args:
-            server: Backend server address
-            status_code: HTTP status code
-            response_time: Response time in milliseconds
-        """
-        self.request_count += 1
-        self.total_response_time += response_time
+    # ── Recording ─────────────────────────────────────────────────────────────
 
-        # Track per-server metrics
-        if server not in self.server_metrics:
-            self.server_metrics[server] = {
-                "requests": 0,
-                "total_time": 0,
-                "errors": 0,
-            }
+    def record_routed(self, ip: str, node: str) -> None:
+        """Call this every time a request is successfully routed."""
+        self.total_requests += 1
+        self.node_hits[node] = self.node_hits.get(node, 0) + 1
+        self.ip_hits[ip] = self.ip_hits.get(ip, 0) + 1
+        self._log(ip, node, blocked=False)
 
-        metrics = self.server_metrics[server]
-        metrics["requests"] += 1
-        metrics["total_time"] += response_time
-        if status_code >= 400:
-            metrics["errors"] += 1
+    def record_blocked(self, ip: str, reason: str) -> None:
+        """Call this every time a request is blocked (rate limit / no healthy node)."""
+        self.total_requests += 1
+        self.total_blocked += 1
+        self.ip_hits[ip] = self.ip_hits.get(ip, 0) + 1
+        self._log(ip, reason, blocked=True)
 
-        # Track status codes
-        if status_code not in self.status_codes:
-            self.status_codes[status_code] = 0
-        self.status_codes[status_code] += 1
+    def _log(self, ip: str, destination: str, blocked: bool) -> None:
+        """Append to the rolling log, keeping only the last 50 entries."""
+        entry = {
+            "time": datetime.now().isoformat(timespec="seconds"),
+            "ip": ip,
+            "routed_to": destination if not blocked else None,
+            "blocked": blocked,
+            "reason": destination if blocked else None,
+        }
+        self.recent_logs.append(entry)
+        if len(self.recent_logs) > self._max_logs:
+            self.recent_logs.pop(0)
 
-    def get_average_response_time(self):
-        """
-        Get average response time
-        
-        Returns:
-            Average response time in milliseconds
-        """
-        if self.request_count == 0:
-            return 0
-        return round(self.total_response_time / self.request_count)
+    # ── Dashboard ─────────────────────────────────────────────────────────────
 
-    def get_server_metrics(self, server):
-        """
-        Get metrics for a specific server
-        
-        Args:
-            server: Backend server address
-            
-        Returns:
-            Server metrics dictionary
-        """
-        if server not in self.server_metrics:
-            return None
-
-        metrics = self.server_metrics[server]
-        avg_response_time = (
-            round(metrics["total_time"] / metrics["requests"])
-            if metrics["requests"] > 0
-            else 0
+    def dashboard(self) -> dict:
+        """Full metrics snapshot — used by the /metrics API endpoint."""
+        routed = self.total_requests - self.total_blocked
+        block_rate = (
+            round(self.total_blocked / self.total_requests * 100, 1)
+            if self.total_requests > 0 else 0.0
         )
-        error_rate = (
-            f"{(metrics['errors'] / metrics['requests']) * 100:.2f}%"
-            if metrics["requests"] > 0
-            else "0%"
-        )
-
         return {
-            "server": server,
-            "requests": metrics["requests"],
-            "avg_response_time": avg_response_time,
-            "errors": metrics["errors"],
-            "error_rate": error_rate,
+            "uptime_since": self.started_at,
+            "total_requests": self.total_requests,
+            "total_routed": routed,
+            "total_blocked": self.total_blocked,
+            "block_rate_percent": block_rate,
+            "node_hits": self.node_hits,
+            "top_ips": self._top_ips(5),
+            "recent_logs": list(reversed(self.recent_logs)),  # newest first
         }
 
-    def get_metrics(self):
-        """
-        Get overall metrics
-        
-        Returns:
-            Dictionary of all metrics
-        """
-        uptime = round((time() - self.start_time))
-        server_stats = []
+    def _top_ips(self, n: int) -> list[dict]:
+        """Return top N IPs by request count."""
+        sorted_ips = sorted(self.ip_hits.items(), key=lambda x: x[1], reverse=True)
+        return [{"ip": ip, "requests": count} for ip, count in sorted_ips[:n]]
 
-        for server in self.server_metrics:
-            server_stats.append(self.get_server_metrics(server))
-
-        return {
-            "total_requests": self.request_count,
-            "avg_response_time": self.get_average_response_time(),
-            "uptime": f"{uptime}s",
-            "status_codes": dict(self.status_codes),
-            "servers": server_stats,
-        }
-
-    def reset(self):
-        """Reset all metrics"""
-        self.request_count = 0
-        self.total_response_time = 0
-        self.server_metrics.clear()
-        self.status_codes.clear()
-        self.start_time = time()
+    def reset(self) -> None:
+        """Clear all counters (useful for testing)."""
+        self.__init__()
