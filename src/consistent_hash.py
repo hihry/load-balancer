@@ -1,95 +1,83 @@
-"""
-Consistent Hash Implementation
-Maps requests to backend servers using consistent hashing algorithm
-"""
-
 import hashlib
-from bisect import bisect_right
+import bisect
 
+class ConsistentHashRing:
+    """
+    Maps IPs to nodes using consistent hashing.
 
-class ConsistentHash:
-    def __init__(self, servers=None, virtual_nodes=150):
+    How it works:
+    - Each node is placed at multiple positions on a virtual ring (0 to 2^32)
+      using virtual nodes (replicas). More replicas = more even distribution.
+    - An incoming IP is hashed to a position on the ring.
+    - We walk clockwise to find the nearest node.
+    - Same IP always lands on the same ring position → same node.
+    - Adding/removing a node only remaps IPs near that node's ring slots.
+    """
+
+    def __init__(self, nodes: list[str], replicas: int = 100):
         """
-        Initialize consistent hash ring
-        
         Args:
-            servers: List of backend server addresses
-            virtual_nodes: Number of virtual nodes per server
+            nodes:    List of node names e.g. ["Node-A", "Node-B", "Node-C"]
+            replicas: Virtual copies per node on the ring (higher = more even spread)
         """
-        self.servers = servers or []
-        self.virtual_nodes = virtual_nodes
-        self.ring = {}
-        self.sorted_keys = []
-        self.build_ring()
+        self.replicas = replicas
+        self.ring: dict[int, str] = {}   # hash position → node name
+        self.sorted_keys: list[int] = [] # sorted list of all positions on the ring
 
-    def hash(self, key):
-        """
-        Hash function using MD5
-        
-        Args:
-            key: String to hash
-            
-        Returns:
-            Integer hash value
-        """
-        return int(hashlib.md5(key.encode()).hexdigest(), 16)
+        for node in nodes:
+            self.add_node(node)
 
-    def build_ring(self):
-        """Build the hash ring with virtual nodes"""
-        self.ring = {}
-        self.sorted_keys = []
+    # ── Ring management ──────────────────────────────────────────────────────
 
-        for server in self.servers:
-            for i in range(self.virtual_nodes):
-                virtual_key = f"{server}:{i}"
-                hash_value = self.hash(virtual_key)
-                self.ring[hash_value] = server
+    def _hash(self, key: str) -> int:
+        """Stable 32-bit hash of any string using MD5."""
+        return int(hashlib.md5(key.encode()).hexdigest(), 16) % (2**32)
 
-        self.sorted_keys = sorted(self.ring.keys())
+    def add_node(self, node: str) -> None:
+        """Place a node on the ring at `replicas` positions."""
+        for i in range(self.replicas):
+            position = self._hash(f"{node}:{i}")
+            self.ring[position] = node
+            bisect.insort(self.sorted_keys, position)
 
-    def add_server(self, server):
-        """
-        Add a new server to the ring
-        
-        Args:
-            server: Server address to add
-        """
-        if server not in self.servers:
-            self.servers.append(server)
-            self.build_ring()
+    def remove_node(self, node: str) -> None:
+        """Remove all ring positions belonging to this node."""
+        for i in range(self.replicas):
+            position = self._hash(f"{node}:{i}")
+            if position in self.ring:
+                del self.ring[position]
+                index = bisect.bisect_left(self.sorted_keys, position)
+                self.sorted_keys.pop(index)
 
-    def remove_server(self, server):
-        """
-        Remove a server from the ring
-        
-        Args:
-            server: Server address to remove
-        """
-        if server in self.servers:
-            self.servers.remove(server)
-            self.build_ring()
+    # ── Routing ──────────────────────────────────────────────────────────────
 
-    def get_server(self, key):
+    def get_node(self, ip: str) -> str | None:
         """
-        Get server for a given key
-        
-        Args:
-            key: Request identifier (usually client IP)
-            
-        Returns:
-            Server address or None
+        Route an IP to a node.
+        - Hash the IP to a ring position.
+        - Walk clockwise to the nearest node slot.
+        - Wrap around if we pass the end of the ring.
+        Returns None if the ring is empty.
         """
-        if not self.servers:
+        if not self.ring:
             return None
 
-        hash_value = self.hash(key)
-        index = bisect_right(self.sorted_keys, hash_value)
+        ip_position = self._hash(ip)
 
+        # bisect_right finds the first slot AFTER the IP's position (clockwise)
+        index = bisect.bisect_right(self.sorted_keys, ip_position)
+
+        # Wrap around to the start of the ring if past the last slot
         if index == len(self.sorted_keys):
             index = 0
 
         return self.ring[self.sorted_keys[index]]
 
-    def get_servers(self):
-        """Get list of all servers"""
-        return self.servers.copy()
+    # ── Utility ──────────────────────────────────────────────────────────────
+
+    def get_distribution(self) -> dict[str, int]:
+        """Return how many ring slots each node owns."""
+        distribution: dict[str, int] = {}
+        for node in self.ring.values():
+            distribution[node] = distribution.get(node, 0) + 1
+        return distribution
