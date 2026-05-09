@@ -2,6 +2,16 @@
 
 A consistent hashing load balancer with health checks, rate limiting, and a live metrics dashboard.
 
+## Live Deployment
+
+| | |
+|---|---|
+| **Base URL** | https://load-balancer-h8ge.onrender.com |
+| **Interactive Docs** | https://load-balancer-h8ge.onrender.com/docs |
+| **Platform** | Render (Free tier) |
+
+> Note: Render free tier spins down after 15 minutes of inactivity. The first request may take 30–60 seconds to wake the server. Subsequent requests are instant.
+
 ---
 
 ## Algorithm
@@ -40,7 +50,7 @@ load-balancer/
 ### 1. Clone the repository
 
 ```bash
-git clone <your-repo-url>
+git clone https://github.com/<your-username>/load-balancer.git
 cd load-balancer
 ```
 
@@ -63,9 +73,9 @@ pip install -r requirements.txt
 uvicorn main:app --reload
 ```
 
-Server runs at `http://localhost:8000`
+Server runs at `https://load-balancer-h8ge.onrender.com`
 
-Interactive API docs at `http://localhost:8000/docs`
+Interactive API docs at `https://load-balancer-h8ge.onrender.com/docs`
 
 ---
 
@@ -92,7 +102,7 @@ lb = LoadBalancer(
 Confirms the server is running.
 
 ```bash
-curl http://localhost:8000/
+curl https://load-balancer-h8ge.onrender.com/
 ```
 
 ```json
@@ -108,7 +118,7 @@ Route a specific IP to a node. The same IP always returns the same node.
 Returns `429` if rate limited or no healthy nodes exist.
 
 ```bash
-curl -X POST http://localhost:8000/route \
+curl -X POST https://load-balancer-h8ge.onrender.com/route \
   -H "Content-Type: application/json" \
   -d '{"ip": "192.168.1.5"}'
 ```
@@ -128,7 +138,7 @@ curl -X POST http://localhost:8000/route \
 Simulate N requests with randomly generated IPs. Mirrors the task's `simulateTraffic()` function. Max 500 per call.
 
 ```bash
-curl -X POST http://localhost:8000/simulate \
+curl -X POST https://load-balancer-h8ge.onrender.com/simulate \
   -H "Content-Type: application/json" \
   -d '{"count": 10}'
 ```
@@ -153,7 +163,7 @@ curl -X POST http://localhost:8000/simulate \
 Returns current UP/DOWN status of all nodes.
 
 ```bash
-curl http://localhost:8000/health
+curl https://load-balancer-h8ge.onrender.com/health
 ```
 
 ```json
@@ -173,7 +183,7 @@ curl http://localhost:8000/health
 Mark a node as DOWN. Load balancer immediately stops routing to it.
 
 ```bash
-curl -X POST http://localhost:8000/health/down \
+curl -X POST https://load-balancer-h8ge.onrender.com/health/down \
   -H "Content-Type: application/json" \
   -d '{"node": "Node-B"}'
 ```
@@ -188,7 +198,7 @@ curl -X POST http://localhost:8000/health/down \
 Bring a node back UP.
 
 ```bash
-curl -X POST http://localhost:8000/health/up \
+curl -X POST https://load-balancer-h8ge.onrender.com/health/up \
   -H "Content-Type: application/json" \
   -d '{"node": "Node-B"}'
 ```
@@ -205,7 +215,7 @@ curl -X POST http://localhost:8000/health/up \
 List all nodes with health status and ring slot count.
 
 ```bash
-curl http://localhost:8000/nodes
+curl https://load-balancer-h8ge.onrender.com/nodes
 ```
 
 ```json
@@ -224,7 +234,7 @@ curl http://localhost:8000/nodes
 Add a new node at runtime. Immediately joins the hash ring and receives traffic.
 
 ```bash
-curl -X POST http://localhost:8000/nodes/add \
+curl -X POST https://load-balancer-h8ge.onrender.com/nodes/add \
   -H "Content-Type: application/json" \
   -d '{"node": "Node-D"}'
 ```
@@ -239,7 +249,7 @@ curl -X POST http://localhost:8000/nodes/add \
 Remove a node at runtime. Ring slots deleted, traffic redistributes automatically.
 
 ```bash
-curl -X POST http://localhost:8000/nodes/remove \
+curl -X POST https://load-balancer-h8ge.onrender.com/nodes/remove \
   -H "Content-Type: application/json" \
   -d '{"node": "Node-D"}'
 ```
@@ -256,7 +266,7 @@ curl -X POST http://localhost:8000/nodes/remove \
 Shows rate limiter config and permanently blocked IPs.
 
 ```bash
-curl http://localhost:8000/ratelimit/status
+curl https://load-balancer-h8ge.onrender.com/ratelimit/status
 ```
 
 ```json
@@ -274,7 +284,7 @@ curl http://localhost:8000/ratelimit/status
 Permanently block an IP. Always rejected regardless of the sliding window.
 
 ```bash
-curl -X POST http://localhost:8000/ratelimit/block \
+curl -X POST https://load-balancer-h8ge.onrender.com/ratelimit/block \
   -H "Content-Type: application/json" \
   -d '{"ip": "1.2.3.4"}'
 ```
@@ -289,7 +299,7 @@ curl -X POST http://localhost:8000/ratelimit/block \
 Remove a permanent block from an IP.
 
 ```bash
-curl -X POST http://localhost:8000/ratelimit/unblock \
+curl -X POST https://load-balancer-h8ge.onrender.com/ratelimit/unblock \
   -H "Content-Type: application/json" \
   -d '{"ip": "1.2.3.4"}'
 ```
@@ -306,7 +316,7 @@ curl -X POST http://localhost:8000/ratelimit/unblock \
 Full live dashboard — total requests, block rate, per-node hits, top IPs, and the 50 most recent logs.
 
 ```bash
-curl http://localhost:8000/metrics
+curl https://load-balancer-h8ge.onrender.com/metrics
 ```
 
 ```json
@@ -334,7 +344,7 @@ curl http://localhost:8000/metrics
 Reset all counters to zero.
 
 ```bash
-curl -X POST http://localhost:8000/metrics/reset
+curl -X POST https://load-balancer-h8ge.onrender.com/metrics/reset
 ```
 
 ```json
@@ -345,31 +355,50 @@ curl -X POST http://localhost:8000/metrics/reset
 
 ## Sample CLI Demo
 
-```bash
-# 1. Start the server
-uvicorn main:app --reload
+The commands below run against the live deployed server.
 
-# 2. Simulate 10 requests
-curl -X POST http://localhost:8000/simulate \
+```bash
+# 1. Simulate 10 requests
+curl -X POST https://load-balancer-h8ge.onrender.com/simulate \
   -H "Content-Type: application/json" \
   -d '{"count": 10}'
 
-# 3. Route same IP twice — confirm same node both times
-curl -X POST http://localhost:8000/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
-curl -X POST http://localhost:8000/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
+# 2. Route same IP twice — confirm same node both times
+curl -X POST https://load-balancer-h8ge.onrender.com/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
+curl -X POST https://load-balancer-h8ge.onrender.com/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
 
-# 4. Take Node-A down
-curl -X POST http://localhost:8000/health/down -H "Content-Type: application/json" -d '{"node": "Node-A"}'
+# 3. Take Node-A down
+curl -X POST https://load-balancer-h8ge.onrender.com/health/down -H "Content-Type: application/json" -d '{"node": "Node-A"}'
 
-# 5. Route same IP — now goes to a different node
-curl -X POST http://localhost:8000/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
+# 4. Route same IP — now goes to a different node
+curl -X POST https://load-balancer-h8ge.onrender.com/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
 
-# 6. Bring Node-A back up
-curl -X POST http://localhost:8000/health/up -H "Content-Type: application/json" -d '{"node": "Node-A"}'
+# 5. Bring Node-A back up
+curl -X POST https://load-balancer-h8ge.onrender.com/health/up -H "Content-Type: application/json" -d '{"node": "Node-A"}'
+
+# 6. Set Node-A to handle double the traffic (weighted routing)
+curl -X POST https://load-balancer-h8ge.onrender.com/nodes/weight \
+  -H "Content-Type: application/json" \
+  -d '{"node": "Node-A", "weight": 2}'
 
 # 7. Check the metrics dashboard
-curl http://localhost:8000/metrics
+curl https://load-balancer-h8ge.onrender.com/metrics
 ```
+
+---
+
+## Deployment
+
+Deployed on **Render** via GitHub integration.
+
+| Field | Value |
+|---|---|
+| Platform | Render (Web Service) |
+| Runtime | Python 3.11 |
+| Build Command | `pip install -r requirements.txt` |
+| Start Command | `uvicorn main:app --host 0.0.0.0 --port $PORT` |
+| Live URL | https://load-balancer-h8ge.onrender.com |
+| Docs URL | https://load-balancer-h8ge.onrender.com/docs |
 
 ---
 
