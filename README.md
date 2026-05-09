@@ -1,233 +1,385 @@
-# Load Balancer
+# Load Balancer — Python / FastAPI
 
-A high-performance load balancer built with Python and FastAPI featuring consistent hashing, health checks, rate limiting, and comprehensive metrics.
+A consistent hashing load balancer with health checks, rate limiting, and a live metrics dashboard.
 
-## Features
+---
 
-- **Consistent Hashing** - Efficient request distribution across backend servers with minimal redistribution
-- **Health Checks** - Periodic health monitoring of backend servers with automatic failover
-- **Rate Limiting** - Per-IP rate limiting using token bucket algorithm
-- **Metrics** - Request metrics, response times, and error tracking
-- **Admin API** - Dynamic server management and monitoring endpoints
+## Algorithm
+
+This load balancer uses **Consistent Hashing** instead of random or round-robin selection.
+
+- Every node is placed at 100 virtual positions on a hash ring (0 to 2^32) by hashing `NodeName:index`
+- An incoming IP is hashed to a position on the ring and routed to the nearest node clockwise
+- The same IP always produces the same hash, same position, same node — every time
+- When a node is added or removed, only the IPs near that node's ring slots get remapped — all others are unaffected
+
+---
 
 ## Project Structure
 
 ```
-LoadBalancer/
+load-balancer/
 ├── src/
-│   ├── consistent_hash.py   - Consistent hashing algorithm
-│   ├── health_check.py      - Server health monitoring
-│   ├── rate_limiter.py      - Per-IP rate limiting
-│   ├── metrics.py           - Request metrics tracking
-│   └── load_balancer.py     - Main load balancer orchestrator
-├── main.py                  - FastAPI server with API routes
+│   ├── __init__.py
+│   ├── consistent_hash.py   # Hash ring — core routing algorithm
+│   ├── health_check.py      # Tracks node UP/DOWN status
+│   ├── rate_limiter.py      # Sliding window rate limiter per IP
+│   ├── metrics.py           # Request counters and recent logs
+│   └── load_balancer.py     # Wires all modules together
+├── main.py                  # FastAPI server — all API endpoints
 ├── requirements.txt
 └── README.md
 ```
 
-## Prerequisites
+---
 
-- Python 3.8+
-- pip
+## Setup and Run
 
-## Installation
+**Requirements:** Python 3.10 or higher
+
+### 1. Clone the repository
 
 ```bash
-# Clone or navigate to the repository
-cd LoadBalancer
+git clone <your-repo-url>
+cd load-balancer
+```
 
-# Create virtual environment (recommended)
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+### 2. Create a virtual environment
 
-# Install dependencies
+```bash
+python3 -m venv venv
+source venv/bin/activate        # Windows: venv\Scripts\activate
+```
+
+### 3. Install dependencies
+
+```bash
 pip install -r requirements.txt
 ```
 
+### 4. Start the server
+
+```bash
+uvicorn main:app --reload
+```
+
+Server runs at `http://localhost:8000`
+
+Interactive API docs at `http://localhost:8000/docs`
+
+---
+
 ## Configuration
 
-Edit `main.py` to configure backend servers:
+Edit the `LoadBalancer` constructor in `main.py` to change defaults:
 
 ```python
-BACKEND_SERVERS = [
-    "localhost:3001",
-    "localhost:3002",
-    "localhost:3003",
-]
+lb = LoadBalancer(
+    nodes=["Node-A", "Node-B", "Node-C"],  # starting nodes
+    replicas=100,                           # virtual slots per node on the ring
+    rate_limit=10,                          # max requests per IP per window
+    rate_window=60,                         # sliding window in seconds
+)
 ```
 
-Configure load balancer options:
-
-```python
-load_balancer = LoadBalancer(BACKEND_SERVERS, {
-    "virtual_nodes": 150,           # Virtual nodes per server (consistency)
-    "health_check_interval": 5,     # Health check interval (seconds)
-    "health_check_timeout": 3,      # Health check timeout (seconds)
-    "max_requests": 100,            # Rate limit: requests per window
-    "rate_limit_window": 60000,     # Rate limit window (milliseconds)
-})
-```
-
-## Running the Server
-
-### Development Mode (with auto-reload)
-
-```bash
-uvicorn main:app --reload --port 3000
-```
-
-### Production Mode
-
-```bash
-python main.py
-```
-
-Or with Gunicorn:
-
-```bash
-gunicorn main:app --workers 4 --worker-class uvicorn.workers.UvicornWorker --bind 0.0.0.0:3000
-```
-
-The load balancer will start on `http://localhost:3000` by default.
+---
 
 ## API Endpoints
 
-### Request Routing
+### General
 
-- `GET/POST/PUT/DELETE /api/*` - All requests are load balanced to backend servers
+#### `GET /`
+Confirms the server is running.
 
-**Example:**
 ```bash
-curl http://localhost:3000/api/users
+curl http://localhost:8000/
 ```
 
-### Health & Status
+```json
+{ "status": "ok", "message": "Load Balancer is running" }
+```
 
-- `GET /health` - Load balancer health check
-- `GET /status` - Current load balancer state and healthy servers
-- `GET /metrics` - Request metrics and performance stats
-- `GET /rate-limits` - Current rate limit stats by IP
+---
 
-### Admin Endpoints
+### Routing
 
-#### Manage Backend Servers
+#### `POST /route`
+Route a specific IP to a node. The same IP always returns the same node.
+Returns `429` if rate limited or no healthy nodes exist.
 
-**Add a server:**
 ```bash
-curl -X POST http://localhost:3000/admin/servers \
+curl -X POST http://localhost:8000/route \
   -H "Content-Type: application/json" \
-  -d '{"server": "localhost:3004"}'
+  -d '{"ip": "192.168.1.5"}'
 ```
-
-**Remove a server:**
-```bash
-curl -X DELETE http://localhost:3000/admin/servers/localhost--3001
-```
-
-Note: Use `--` instead of `:` in the URL path for port specification.
-
-**List all servers:**
-```bash
-curl http://localhost:3000/admin/servers
-```
-
-#### Reset Data
-
-**Reset metrics:**
-```bash
-curl -X POST http://localhost:3000/admin/reset-metrics
-```
-
-**Reset rate limits:**
-```bash
-curl -X POST http://localhost:3000/admin/reset-rate-limits
-```
-
-## Example Response - Status
 
 ```json
 {
-  "servers": ["localhost:3001", "localhost:3002", "localhost:3003"],
-  "healthy_servers": ["localhost:3001", "localhost:3002"],
-  "metrics": {
-    "total_requests": 450,
-    "avg_response_time": 125,
-    "uptime": "323s",
-    "status_codes": {
-      "200": 440,
-      "500": 10
-    },
-    "servers": [
-      {
-        "server": "localhost:3001",
-        "requests": 150,
-        "avg_response_time": 120,
-        "errors": 2,
-        "error_rate": "1.33%"
-      },
-      {
-        "server": "localhost:3002",
-        "requests": 140,
-        "avg_response_time": 130,
-        "errors": 3,
-        "error_rate": "2.14%"
-      },
-      {
-        "server": "localhost:3003",
-        "requests": 160,
-        "avg_response_time": 125,
-        "errors": 5,
-        "error_rate": "3.13%"
-      }
-    ]
-  }
+  "ip": "192.168.1.5",
+  "routed_to": "Node-C",
+  "blocked": false,
+  "reason": null
 }
 ```
 
-## Testing with Backend Servers
+---
 
-Create simple backend servers to test the load balancer:
-
-```bash
-# Terminal 1: Load Balancer
-python main.py
-
-# Terminal 2: Backend Server 1
-python -m http.server 3001
-
-# Terminal 3: Backend Server 2
-python -m http.server 3002
-
-# Terminal 4: Backend Server 3
-python -m http.server 3003
-
-# Terminal 5: Test requests
-curl http://localhost:3000/api/
-```
-
-## Performance Tuning
-
-- **Virtual Nodes**: Increase for better distribution with many servers
-- **Health Check Interval**: Decrease for faster failure detection
-- **Rate Limit**: Adjust based on expected traffic
-- **Workers**: Use Gunicorn with multiple workers for production
-
-## Monitoring
-
-Check metrics regularly:
+#### `POST /simulate`
+Simulate N requests with randomly generated IPs. Mirrors the task's `simulateTraffic()` function. Max 500 per call.
 
 ```bash
-# View metrics
-curl http://localhost:3000/metrics | python -m json.tool
-
-# Monitor in real-time
-watch -n 1 'curl -s http://localhost:3000/metrics | python -m json.tool | grep total_requests'
+curl -X POST http://localhost:8000/simulate \
+  -H "Content-Type: application/json" \
+  -d '{"count": 10}'
 ```
 
-## License
+```json
+{
+  "total": 10,
+  "routed": 10,
+  "blocked": 0,
+  "results": [
+    { "ip": "93.67.24.106", "routed_to": "Node-C", "blocked": false, "reason": null },
+    { "ip": "76.33.176.4",  "routed_to": "Node-B", "blocked": false, "reason": null }
+  ]
+}
+```
 
-MIT
+---
 
-## Author
+### Health
 
-Your Name
+#### `GET /health`
+Returns current UP/DOWN status of all nodes.
+
+```bash
+curl http://localhost:8000/health
+```
+
+```json
+{
+  "nodes": [
+    { "node": "Node-A", "status": "UP", "last_changed": "2026-05-09T10:00:00" },
+    { "node": "Node-B", "status": "UP", "last_changed": "2026-05-09T10:00:00" },
+    { "node": "Node-C", "status": "UP", "last_changed": "2026-05-09T10:00:00" }
+  ],
+  "healthy_count": 3
+}
+```
+
+---
+
+#### `POST /health/down`
+Mark a node as DOWN. Load balancer immediately stops routing to it.
+
+```bash
+curl -X POST http://localhost:8000/health/down \
+  -H "Content-Type: application/json" \
+  -d '{"node": "Node-B"}'
+```
+
+```json
+{ "node": "Node-B", "status": "DOWN" }
+```
+
+---
+
+#### `POST /health/up`
+Bring a node back UP.
+
+```bash
+curl -X POST http://localhost:8000/health/up \
+  -H "Content-Type: application/json" \
+  -d '{"node": "Node-B"}'
+```
+
+```json
+{ "node": "Node-B", "status": "UP" }
+```
+
+---
+
+### Nodes
+
+#### `GET /nodes`
+List all nodes with health status and ring slot count.
+
+```bash
+curl http://localhost:8000/nodes
+```
+
+```json
+{
+  "nodes": [
+    { "name": "Node-A", "status": "UP",   "ring_slots": 100 },
+    { "name": "Node-B", "status": "DOWN", "ring_slots": 100 },
+    { "name": "Node-C", "status": "UP",   "ring_slots": 100 }
+  ]
+}
+```
+
+---
+
+#### `POST /nodes/add`
+Add a new node at runtime. Immediately joins the hash ring and receives traffic.
+
+```bash
+curl -X POST http://localhost:8000/nodes/add \
+  -H "Content-Type: application/json" \
+  -d '{"node": "Node-D"}'
+```
+
+```json
+{ "message": "Node 'Node-D' added", "nodes": ["Node-A", "Node-B", "Node-C", "Node-D"] }
+```
+
+---
+
+#### `POST /nodes/remove`
+Remove a node at runtime. Ring slots deleted, traffic redistributes automatically.
+
+```bash
+curl -X POST http://localhost:8000/nodes/remove \
+  -H "Content-Type: application/json" \
+  -d '{"node": "Node-D"}'
+```
+
+```json
+{ "message": "Node 'Node-D' removed", "nodes": ["Node-A", "Node-B", "Node-C"] }
+```
+
+---
+
+### Rate Limiting
+
+#### `GET /ratelimit/status`
+Shows rate limiter config and permanently blocked IPs.
+
+```bash
+curl http://localhost:8000/ratelimit/status
+```
+
+```json
+{
+  "limit": 10,
+  "window_seconds": 60,
+  "tracked_ips": 4,
+  "blocked_ips": ["1.2.3.4"]
+}
+```
+
+---
+
+#### `POST /ratelimit/block`
+Permanently block an IP. Always rejected regardless of the sliding window.
+
+```bash
+curl -X POST http://localhost:8000/ratelimit/block \
+  -H "Content-Type: application/json" \
+  -d '{"ip": "1.2.3.4"}'
+```
+
+```json
+{ "message": "IP '1.2.3.4' permanently blocked" }
+```
+
+---
+
+#### `POST /ratelimit/unblock`
+Remove a permanent block from an IP.
+
+```bash
+curl -X POST http://localhost:8000/ratelimit/unblock \
+  -H "Content-Type: application/json" \
+  -d '{"ip": "1.2.3.4"}'
+```
+
+```json
+{ "message": "IP '1.2.3.4' unblocked" }
+```
+
+---
+
+### Metrics Dashboard
+
+#### `GET /metrics`
+Full live dashboard — total requests, block rate, per-node hits, top IPs, and the 50 most recent logs.
+
+```bash
+curl http://localhost:8000/metrics
+```
+
+```json
+{
+  "uptime_since": "2026-05-09T10:00:00",
+  "total_requests": 20,
+  "total_routed": 18,
+  "total_blocked": 2,
+  "block_rate_percent": 10.0,
+  "node_hits": { "Node-A": 6, "Node-B": 5, "Node-C": 7 },
+  "top_ips": [
+    { "ip": "192.168.1.5", "requests": 4 },
+    { "ip": "10.0.0.22",   "requests": 2 }
+  ],
+  "recent_logs": [
+    { "time": "2026-05-09T10:01:00", "ip": "192.168.1.5", "routed_to": "Node-C", "blocked": false, "reason": null },
+    { "time": "2026-05-09T10:00:58", "ip": "1.2.3.4",     "routed_to": null,     "blocked": true,  "reason": "rate_limit_exceeded" }
+  ]
+}
+```
+
+---
+
+#### `POST /metrics/reset`
+Reset all counters to zero.
+
+```bash
+curl -X POST http://localhost:8000/metrics/reset
+```
+
+```json
+{ "message": "Metrics reset successfully" }
+```
+
+---
+
+## Sample CLI Demo
+
+```bash
+# 1. Start the server
+uvicorn main:app --reload
+
+# 2. Simulate 10 requests
+curl -X POST http://localhost:8000/simulate \
+  -H "Content-Type: application/json" \
+  -d '{"count": 10}'
+
+# 3. Route same IP twice — confirm same node both times
+curl -X POST http://localhost:8000/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
+curl -X POST http://localhost:8000/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
+
+# 4. Take Node-A down
+curl -X POST http://localhost:8000/health/down -H "Content-Type: application/json" -d '{"node": "Node-A"}'
+
+# 5. Route same IP — now goes to a different node
+curl -X POST http://localhost:8000/route -H "Content-Type: application/json" -d '{"ip": "10.10.10.10"}'
+
+# 6. Bring Node-A back up
+curl -X POST http://localhost:8000/health/up -H "Content-Type: application/json" -d '{"node": "Node-A"}'
+
+# 7. Check the metrics dashboard
+curl http://localhost:8000/metrics
+```
+
+---
+
+## Requirements
+
+```
+fastapi==0.111.0
+uvicorn==0.29.0
+```
+
+```bash
+pip install -r requirements.txt
+```
