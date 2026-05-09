@@ -1,159 +1,153 @@
-"""
-Load Balancer Module
-Wires together consistent hashing, health checks, rate limiting, and metrics
-"""
+import random
+from src.consistent_hash import ConsistentHashRing
+from src.health_check import HealthChecker
+from src.rate_limiter import RateLimiter
+from src.metrics import Metrics
 
-import httpx
-from typing import Dict, List, Tuple
-from .consistent_hash import ConsistentHash
-from .health_check import HealthCheck
-from .rate_limiter import RateLimiter
-from .metrics import Metrics
+# ── Required functions ported from JS (as per task) ───────────────────────────
 
+def generate_random_ip() -> str:
+    """
+    Port of the JS function from the task:
+        function generateRandomIP() {
+            return Array.from({ length: 4 }, () =>
+                Math.floor(Math.random() * 256)).join(".");
+        }
+    """
+    return ".".join(str(random.randint(0, 255)) for _ in range(4))
+
+
+def identify_node(ip: str, selected_node: str) -> None:
+    """
+    Port of the JS function from the task:
+        function identifyNode(ip, selectedNode) {
+            console.log(`Incoming IP: ${ip} → Routed to: ${selectedNode}`);
+        }
+    """
+    print(f"Incoming IP: {ip} → Routed to: {selected_node}")
+
+
+# ── Load Balancer ─────────────────────────────────────────────────────────────
 
 class LoadBalancer:
-    def __init__(self, servers=None, options=None):
+    """
+    Wires together all four modules:
+      1. ConsistentHashRing  — deterministic IP → node mapping
+      2. HealthChecker       — skips DOWN nodes
+      3. RateLimiter         — blocks IPs exceeding request limits
+      4. Metrics             — records every routing decision
+
+    Flow for each request:
+      is_allowed(ip)?  →  No  → record_blocked → return error
+           ↓ Yes
+      healthy_nodes()  →  []  → record_blocked → return error
+           ↓
+      rebuild ring with only healthy nodes
+           ↓
+      get_node(ip)     → node
+           ↓
+      identify_node()  → log to console
+           ↓
+      record_routed()  → update metrics
+           ↓
+      return node
+    """
+
+    def __init__(
+        self,
+        nodes: list[str] | None = None,
+        replicas: int = 100,
+        rate_limit: int = 10,
+        rate_window: int = 60,
+    ):
         """
-        Initialize load balancer
-        
         Args:
-            servers: List of backend server addresses
-            options: Configuration options
+            nodes:       List of node names. Defaults to ["Node-A", "Node-B", "Node-C"].
+            replicas:    Virtual nodes per server on the hash ring.
+            rate_limit:  Max requests per IP within the window.
+            rate_window: Sliding window size in seconds.
         """
-        self.servers = servers or []
-        options = options or {}
+        self.nodes: list[str] = nodes or ["Node-A", "Node-B", "Node-C"]
 
-        # Initialize components
-        self.consistent_hash = ConsistentHash(
-            self.servers,
-            virtual_nodes=options.get("virtual_nodes", 150),
-        )
-
-        self.health_check = HealthCheck(
-            self.servers,
-            interval=options.get("health_check_interval", 5),
-            timeout=options.get("health_check_timeout", 3),
-        )
-
-        self.rate_limiter = RateLimiter(
-            max_requests=options.get("max_requests", 100),
-            window_ms=options.get("rate_limit_window", 60000),
-        )
-
+        self.ring = ConsistentHashRing(self.nodes, replicas=replicas)
+        self.health = HealthChecker(self.nodes)
+        self.limiter = RateLimiter(limit=rate_limit, window_seconds=rate_window)
         self.metrics = Metrics()
 
-    def start(self):
-        """Start the load balancer"""
-        self.health_check.start()
-        print(f"[LoadBalancer] Started with servers: {self.servers}")
+    # ── Core routing ──────────────────────────────────────────────────────────
 
-    def stop(self):
-        """Stop the load balancer"""
-        self.health_check.stop()
-        print("[LoadBalancer] Stopped")
-
-    def get_server(self, client_ip: str) -> Dict[str, str]:
+    def route(self, ip: str) -> dict:
         """
-        Get the best server for routing a request
-        
-        Args:
-            client_ip: Client IP address
-            
-        Returns:
-            Dictionary with server address and reason
+        Route an incoming IP to a node.
+        Returns a dict describing the outcome (success or blocked).
         """
-        # Check rate limit first
-        if not self.rate_limiter.is_allowed(client_ip):
-            return {"server": None, "reason": "RATE_LIMIT_EXCEEDED"}
 
-        # Get all healthy servers
-        healthy_servers = self.health_check.get_healthy_servers(self.servers)
+        # Step 1: Rate limit check
+        if not self.limiter.is_allowed(ip):
+            self.metrics.record_blocked(ip, "rate_limit_exceeded")
+            return {
+                "ip": ip,
+                "routed_to": None,
+                "blocked": True,
+                "reason": "rate_limit_exceeded",
+            }
+        self.limiter.record(ip)
 
-        if not healthy_servers:
-            return {"server": None, "reason": "NO_HEALTHY_SERVERS"}
+        # Step 2: Get only healthy nodes and rebuild ring if needed
+        healthy = self.health.healthy_nodes()
+        if not healthy:
+            self.metrics.record_blocked(ip, "no_healthy_nodes")
+            return {
+                "ip": ip,
+                "routed_to": None,
+                "blocked": True,
+                "reason": "no_healthy_nodes",
+            }
 
-        # Use consistent hash to select server
-        server = self.consistent_hash.get_server(client_ip)
+        # Build a temporary ring with only healthy nodes
+        active_ring = ConsistentHashRing(healthy, replicas=100)
 
-        if not self.health_check.is_healthy(server):
-            # If selected server is down, find next healthy one
-            next_server = next((s for s in healthy_servers if s != server), None)
-            return {"server": next_server, "reason": "FAILOVER"}
+        # Step 3: Consistent hash → node
+        node = active_ring.get_node(ip)
 
-        return {"server": server, "reason": "OK"}
+        # Step 4: Log to console (required by task)
+        identify_node(ip, node)
 
-    async def forward_request(self, method: str, url: str, target_server: str, headers: dict = None, body: bytes = None) -> Tuple[int, dict, bytes]:
-        """
-        Forward request to backend server
-        
-        Args:
-            method: HTTP method
-            url: Request URL
-            target_server: Target server address
-            headers: Request headers
-            body: Request body
-            
-        Returns:
-            Tuple of (status_code, response_headers, response_body)
-        """
-        import time
-        start_time = time.time()
+        # Step 5: Record in metrics
+        self.metrics.record_routed(ip, node)
 
-        try:
-            target_url = f"http://{target_server}{url}"
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.request(
-                    method,
-                    target_url,
-                    headers=headers,
-                    content=body,
-                )
-            
-            response_time = (time.time() - start_time) * 1000  # Convert to ms
-            self.metrics.record_request(target_server, response.status_code, response_time)
-            
-            return response.status_code, dict(response.headers), response.content
-        except Exception as e:
-            print(f"[LoadBalancer] Error forwarding to {target_server}: {e}")
-            response_time = (time.time() - start_time) * 1000
-            self.metrics.record_request(target_server, 503, response_time)
-            return 503, {"content-type": "application/json"}, b'{"error": "Service Unavailable"}'
-
-    def add_server(self, server: str):
-        """
-        Add a new server
-        
-        Args:
-            server: Server address to add
-        """
-        if server not in self.servers:
-            self.servers.append(server)
-            self.consistent_hash.add_server(server)
-            self.health_check.add_server(server)
-            print(f"[LoadBalancer] Added server: {server}")
-
-    def remove_server(self, server: str):
-        """
-        Remove a server
-        
-        Args:
-            server: Server address to remove
-        """
-        if server in self.servers:
-            self.servers.remove(server)
-            self.consistent_hash.remove_server(server)
-            self.health_check.remove_server(server)
-            print(f"[LoadBalancer] Removed server: {server}")
-
-    def get_status(self) -> dict:
-        """
-        Get current state and metrics
-        
-        Returns:
-            Status dictionary
-        """
         return {
-            "servers": self.servers,
-            "healthy_servers": self.health_check.get_healthy_servers(self.servers),
-            "metrics": self.metrics.get_metrics(),
+            "ip": ip,
+            "routed_to": node,
+            "blocked": False,
+            "reason": None,
         }
+
+    # ── Simulation (required by task) ─────────────────────────────────────────
+
+    def simulate_traffic(self, request_count: int = 10) -> list[dict]:
+        """
+        Port of the JS simulateTraffic() function from the task.
+        Generates random IPs and routes each one.
+        """
+        results = []
+        for _ in range(request_count):
+            ip = generate_random_ip()
+            result = self.route(ip)
+            results.append(result)
+        return results
+
+    # ── Node management ───────────────────────────────────────────────────────
+
+    def add_node(self, node: str) -> None:
+        """Add a new node to the balancer (ring + health tracker)."""
+        self.nodes.append(node)
+        self.ring.add_node(node)
+        self.health.status[node] = True
+
+    def remove_node(self, node: str) -> None:
+        """Remove a node from the balancer entirely."""
+        if node in self.nodes:
+            self.nodes.remove(node)
+            self.ring.remove_node(node)
+            self.health.status.pop(node, None)
