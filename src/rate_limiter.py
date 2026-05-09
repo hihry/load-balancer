@@ -1,98 +1,85 @@
-"""
-Rate Limiter Module
-Implements per-IP rate limiting using token bucket algorithm
-"""
-
-from typing import Dict
-from time import time
-
+from datetime import datetime, timedelta
 
 class RateLimiter:
-    def __init__(self, max_requests=100, window_ms=60000):
+    """
+    Blocks IPs that exceed a set number of requests within a time window.
+
+    Strategy: Sliding Window
+    - Each IP gets a list of timestamps for its recent requests.
+    - On every new request, we drop timestamps older than the window.
+    - If the remaining count >= limit, the IP is blocked.
+
+    Example: limit=5, window=60s
+      → An IP can make 5 requests per minute.
+      → The 6th request within that minute is blocked.
+      → After 60s, the window slides forward and the IP is unblocked.
+    """
+
+    def __init__(self, limit: int = 10, window_seconds: int = 60):
         """
-        Initialize rate limiter
-        
         Args:
-            max_requests: Maximum requests allowed per window
-            window_ms: Time window in milliseconds
+            limit:          Max requests allowed per IP within the window.
+            window_seconds: How long the sliding window lasts (in seconds).
         """
-        self.max_requests = max_requests
-        self.window_ms = window_ms / 1000  # Convert to seconds
-        self.clients: Dict[str, dict] = {}
+        self.limit = limit
+        self.window = timedelta(seconds=window_seconds)
 
-    def is_allowed(self, client_ip):
+        # ip → list of datetime timestamps for recent requests
+        self.requests: dict[str, list[datetime]] = {}
+
+        # IPs manually blocked by admin (permanent until unblocked)
+        self.blocked: set[str] = set()
+
+    # ── Core check ────────────────────────────────────────────────────────────
+
+    def is_allowed(self, ip: str) -> bool:
         """
-        Check if request is allowed using token bucket algorithm
-        
-        Args:
-            client_ip: Client IP address
-            
-        Returns:
-            True if request is allowed, False otherwise
+        Check if the IP is allowed to make a request.
+        - Permanently blocked IPs are always rejected.
+        - Otherwise apply the sliding window check.
+        Does NOT record the request — call record() separately.
         """
-        now = time()
+        if ip in self.blocked:
+            return False
 
-        if client_ip not in self.clients:
-            # New client: initialize bucket
-            self.clients[client_ip] = {
-                "tokens": self.max_requests,
-                "last_refill": now,
-            }
-            return True
+        now = datetime.now()
+        window_start = now - self.window
 
-        bucket = self.clients[client_ip]
+        # Keep only timestamps within the current window
+        recent = [t for t in self.requests.get(ip, []) if t > window_start]
+        self.requests[ip] = recent
 
-        # Calculate tokens to add based on time elapsed
-        time_passed = now - bucket["last_refill"]
-        tokens_to_add = (time_passed / self.window_ms) * self.max_requests
+        return len(recent) < self.limit
 
-        bucket["tokens"] = min(self.max_requests, bucket["tokens"] + tokens_to_add)
-        bucket["last_refill"] = now
+    def record(self, ip: str) -> None:
+        """Record a request timestamp for this IP."""
+        if ip not in self.requests:
+            self.requests[ip] = []
+        self.requests[ip].append(datetime.now())
 
-        if bucket["tokens"] >= 1:
-            bucket["tokens"] -= 1
-            return True
+    # ── Admin controls ────────────────────────────────────────────────────────
 
-        return False
+    def block_ip(self, ip: str) -> None:
+        """Permanently block an IP (overrides sliding window)."""
+        self.blocked.add(ip)
 
-    def get_remaining_requests(self, client_ip):
-        """
-        Get remaining requests for a client
-        
-        Args:
-            client_ip: Client IP address
-            
-        Returns:
-            Number of remaining requests
-        """
-        if client_ip not in self.clients:
-            return self.max_requests
-        return int(self.clients[client_ip]["tokens"])
+    def unblock_ip(self, ip: str) -> None:
+        """Remove permanent block from an IP."""
+        self.blocked.discard(ip)
 
-    def reset(self):
-        """Reset all rate limits"""
-        self.clients.clear()
+    # ── Info ──────────────────────────────────────────────────────────────────
 
-    def reset_client(self, client_ip):
-        """
-        Reset rate limit for a specific client
-        
-        Args:
-            client_ip: Client IP address
-        """
-        self.clients.pop(client_ip, None)
+    def request_count(self, ip: str) -> int:
+        """How many requests this IP has made in the current window."""
+        now = datetime.now()
+        window_start = now - self.window
+        return len([t for t in self.requests.get(ip, []) if t > window_start])
 
-    def get_stats(self):
-        """
-        Get stats for all clients
-        
-        Returns:
-            Dictionary of client stats
-        """
-        stats = {}
-        for client_ip, bucket in self.clients.items():
-            stats[client_ip] = {
-                "tokens": int(bucket["tokens"]),
-                "limit": self.max_requests,
-            }
-        return stats
+    def report(self) -> dict:
+        """Summary of rate limiter state."""
+        return {
+            "limit": self.limit,
+            "window_seconds": int(self.window.total_seconds()),
+            "tracked_ips": len(self.requests),
+            "blocked_ips": list(self.blocked),
+        }
