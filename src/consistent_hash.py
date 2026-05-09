@@ -6,7 +6,7 @@ class ConsistentHashRing:
     Maps IPs to nodes using consistent hashing.
 
     How it works:
-    - Each node is placed at multiple positions on a virtual ring (0 to 2^32)
+    - Each node is placed at multiple positions on a virtual ring (0 to 2^32 - 1)
       using virtual nodes (replicas). More replicas = more even distribution.
     - An incoming IP is hashed to a position on the ring.
     - We walk clockwise to find the nearest node.

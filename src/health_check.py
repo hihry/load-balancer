@@ -1,131 +1,73 @@
-"""
-Health Check Module
-Periodically checks the health status of backend servers
-"""
-
-import asyncio
-import aiohttp
-from typing import Dict, List
 from datetime import datetime
 
+class HealthChecker:
+    """
+    Tracks the health status of each node (UP or DOWN).
+    The load balancer skips DOWN nodes automatically.
 
-class HealthCheck:
-    def __init__(self, servers=None, interval=5, timeout=3):
+    Features:
+    - Mark any node UP or DOWN manually (via API)
+    - Track when the status last changed
+    - Get a full health report of all nodes
+    """
+
+    def __init__(self, nodes: list[str]):
         """
-        Initialize health checker
-        
         Args:
-            servers: List of backend server addresses
-            interval: Health check interval in seconds
-            timeout: Request timeout in seconds
+            nodes: List of node names e.g. ["Node-A", "Node-B", "Node-C"]
+                   All nodes start as UP by default.
         """
-        self.servers = servers or []
-        self.interval = interval
-        self.timeout = timeout
-        self.health_status: Dict[str, bool] = {}
-        self.check_task = None
+        self.status: dict[str, bool] = {node: True for node in nodes}
+        self.last_changed: dict[str, str] = {
+            node: datetime.now().isoformat(timespec="seconds")
+            for node in nodes
+        }
 
-        # Initialize all servers as healthy
-        for server in self.servers:
-            self.health_status[server] = True
+    # ── Status control ────────────────────────────────────────────────────────
 
-    async def check_server_health(self, server):
-        """
-        Check health of a single server
-        
-        Args:
-            server: Server address to check
-            
-        Returns:
-            True if healthy, False otherwise
-        """
-        url = f"http://{server}/health"
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=self.timeout)) as response:
-                    return 200 <= response.status < 300
-        except Exception as e:
+    def mark_down(self, node: str) -> bool:
+        """Mark a node as DOWN. Returns False if node doesn't exist."""
+        if node not in self.status:
             return False
+        self.status[node] = False
+        self.last_changed[node] = datetime.now().isoformat(timespec="seconds")
+        return True
 
-    async def perform_check(self, server):
-        """
-        Perform a single health check
-        
-        Args:
-            server: Server address to check
-        """
-        is_healthy = await self.check_server_health(server)
-        was_healthy = self.health_status.get(server, True)
+    def mark_up(self, node: str) -> bool:
+        """Mark a node as UP. Returns False if node doesn't exist."""
+        if node not in self.status:
+            return False
+        self.status[node] = True
+        self.last_changed[node] = datetime.now().isoformat(timespec="seconds")
+        return True
 
-        if is_healthy != was_healthy:
-            status = "UP" if is_healthy else "DOWN"
-            print(f"[HealthCheck] Server {server} is now {status}")
-            self.health_status[server] = is_healthy
+    def toggle(self, node: str) -> bool | None:
+        """Flip a node's status. Returns new status, or None if not found."""
+        if node not in self.status:
+            return None
+        if self.status[node]:
+            self.mark_down(node)
+        else:
+            self.mark_up(node)
+        return self.status[node]
 
-    async def start_health_checks(self):
-        """Start periodic health checks"""
-        print("[HealthCheck] Started health checks")
-        try:
-            while True:
-                tasks = [self.perform_check(server) for server in self.servers]
-                await asyncio.gather(*tasks)
-                await asyncio.sleep(self.interval)
-        except asyncio.CancelledError:
-            print("[HealthCheck] Stopped health checks")
+    # ── Queries ───────────────────────────────────────────────────────────────
 
-    def start(self):
-        """Start health checks in background"""
-        if not self.check_task:
-            self.check_task = asyncio.create_task(self.start_health_checks())
+    def is_healthy(self, node: str) -> bool:
+        """Returns True if the node is UP."""
+        return self.status.get(node, False)
 
-    def stop(self):
-        """Stop health checks"""
-        if self.check_task:
-            self.check_task.cancel()
-            self.check_task = None
+    def healthy_nodes(self) -> list[str]:
+        """Returns list of all nodes currently UP."""
+        return [node for node, up in self.status.items() if up]
 
-    def is_healthy(self, server):
-        """
-        Check if server is healthy
-        
-        Args:
-            server: Server address
-            
-        Returns:
-            True if healthy, False otherwise
-        """
-        return self.health_status.get(server, True)
-
-    def get_healthy_servers(self, all_servers: List[str]) -> List[str]:
-        """
-        Get list of healthy servers
-        
-        Args:
-            all_servers: List of all servers
-            
-        Returns:
-            List of healthy servers
-        """
-        return [server for server in all_servers if self.is_healthy(server)]
-
-    def add_server(self, server):
-        """
-        Add a server to health checks
-        
-        Args:
-            server: Server address to add
-        """
-        if server not in self.servers:
-            self.servers.append(server)
-            self.health_status[server] = True
-
-    def remove_server(self, server):
-        """
-        Remove a server from health checks
-        
-        Args:
-            server: Server address to remove
-        """
-        if server in self.servers:
-            self.servers.remove(server)
-            self.health_status.pop(server, None)
+    def report(self) -> list[dict]:
+        """Full health report for all nodes."""
+        return [
+            {
+                "node": node,
+                "status": "UP" if up else "DOWN",
+                "last_changed": self.last_changed[node],
+            }
+            for node, up in self.status.items()
+        ]
